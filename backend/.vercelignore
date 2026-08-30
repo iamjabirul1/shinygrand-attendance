@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+*.db
+*.sqlite
+onnx_models
+.pytest_cache
+.mypy_cache
+tests
+test_*.py
+.git

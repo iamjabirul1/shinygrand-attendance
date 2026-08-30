@@ -1,9 +1,3 @@
 {
-  "framework": "nextjs",
-  "buildCommand": "npm run build",
-  "outputDirectory": ".next",
-  "env": {
-    "NEXT_PUBLIC_API_URL": "@api-url",
-    "NEXT_PUBLIC_STATION_ID": "GUW-01"
-  }
+  "framework": "nextjs"
 }
