@@ -1,0 +1,5 @@
+# Cloudflare Pages — copy vars to dashboard (Settings → Environment variables)
+# For Wrangler Pages deploy: `npx wrangler pages deploy .next --project-name=shinygrand-frontend`
+[vars]
+NEXT_PUBLIC_API_URL = "https://shinygrand-api.onrender.com"
+NEXT_PUBLIC_STATION_ID = "GUW-01"

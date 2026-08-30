@@ -1,0 +1,12 @@
+name: keepalive
+on:
+  schedule:
+    - cron: "0 */12 * * *" # every 12h keeps Render free awake
+  workflow_dispatch:
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Pinging API to prevent sleep..."
+          curl -fsS "${{ secrets.API_URL }}/health" || echo "ping failed (sleeping?)"

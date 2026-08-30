@@ -14,7 +14,12 @@ branch_labels = None
 depends_on = None
 
 def upgrade():
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    # Only create pgvector extension on Postgres; skip on SQLite (fallback)
+    try:
+        op.execute("CREATE EXTENSION IF NOT EXISTS vector")
+    except Exception as e:
+        print(f"Skipping vector extension (not Postgres): {e}")
+        # For SQLite we don't need pgvector; fallback handled in application layer
     op.create_table("users",
         sa.Column("id", sa.String(), primary_key=True),
         sa.Column("email", sa.String(length=255), nullable=False, unique=True),

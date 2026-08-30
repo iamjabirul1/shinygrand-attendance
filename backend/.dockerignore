@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.venv
+venv
+.env
+*.db
+*.sqlite
+onnx_models
+.pytest_cache
+.mypy_cache
+tests
+test_*.py

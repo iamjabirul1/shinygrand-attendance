@@ -63,5 +63,17 @@ See `backend/.env.example` and `frontend/.env.example`.
 - Provide PIN fallback for declining staff, show privacy notice at enrollment.
 - See `docs/PRIVACY.md`.
 
+## Cloud Free Deploy — 15 min to live URL
+
+Host on **₹0 cloud** (no card, no Tunnel PC needed):
+
+**1. DB — Neon free:** https://console.neon.tech → Create project `shinygrand` → copy `postgresql+psycopg://...?sslmode=require`
+**2. API — Render free:** https://dashboard.render.com → New Blueprint → connect repo (reads `render.yaml`) or New Web Service (Docker: `backend/Dockerfile`, env `DATABASE_URL` = Neon, `JWT_SECRET` = 32+ chars) → Deploy → copy `https://shinygrand-api.onrender.com` → test `/health`
+**3. Web — Cloudflare Pages free:** https://dash.cloudflare.com → Pages → Connect Git → `frontend` → Build `npm run build` → Env `NEXT_PUBLIC_API_URL=https://shinygrand-api.onrender.com` → Deploy → `https://shinygrand-frontend.pages.dev`
+
+Add UptimeRobot ping to `/health` every 10m to prevent Render sleep. Full step-by-step with screenshots: [docs/CLOUD_FREE.md](docs/CLOUD_FREE.md).
+
+> Local also works forever: `backend/run.ps1` + `npm run dev`. Cloud is optional.
+
 ## Cost
-₹0/month on free tiers (Cloudflare Pages + Neon + Tunnel on already-on PC). Optional USB webcam ~₹1,500.
+₹0/month on free tiers (Cloudflare Pages + Neon + Render Free — 750h/mo, or Tunnel on already-on PC). Optional USB webcam ~₹1,500.

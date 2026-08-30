@@ -1,0 +1,26 @@
+# Render Blueprint — Free Cloud Host for Hotel Shiny Grand API
+# Connect this repo to Render (https://dashboard.render.com/blueprints) — auto-creates Web Service
+services:
+  - type: web
+    name: shinygrand-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false  # set to Neon postgres URL: postgresql+psycopg://...?sslmode=require
+      - key: JWT_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        value: https://shinygrand-frontend.pages.dev,https://*.pages.dev,https://*.vercel.app,http://localhost:3000
+      - key: ATTENDANCE_THRESHOLD
+        value: "0.42"
+      - key: ATTENDANCE_COOLDOWN_SECONDS
+        value: "60"
+      - key: TZ
+        value: Asia/Kolkata
+      - key: INSIGHTFACE_MODEL_DIR
+        value: ./onnx_models
+    autoDeploy: true

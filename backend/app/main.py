@@ -8,9 +8,12 @@ settings = get_settings()
 app = FastAPI(title="Hotel Shiny Grand Attendance API", version="1.0.0")
 
 origins = [o.strip() for o in settings.CORS_ORIGINS.split(",")]
+# Cloud free: allow regex for *.pages.dev / *.vercel.app wildcards via allow_origin_regex
+origin_regex = r"https://.*\.(pages\.dev|vercel\.app|onrender\.com)"
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
+    allow_origin_regex=origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
