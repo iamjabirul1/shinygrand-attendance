@@ -4,15 +4,18 @@ export default function Home() {
     <main className="max-w-3xl mx-auto p-8">
       <h1 className="text-3xl font-bold text-brand">Hotel Shiny Grand — Attendance</h1>
       <p className="mt-2 text-zinc-600">Single kiosk GUW-01 • Guwahati • IST</p>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mt-8">
         <Link href="/kiosk" className="p-6 bg-white rounded-xl shadow border hover:shadow-md">
-          <div className="font-semibold">📷 Kiosk</div><div className="text-sm text-zinc-500">Full-screen check-in/out (PC)</div>
+          <div className="font-semibold">📷 Kiosk</div><div className="text-sm text-zinc-500">Check-in/out (PC + phone)</div>
+        </Link>
+        <Link href="/enroll" className="p-6 bg-amber-50 rounded-xl shadow border border-amber-200 hover:shadow-md">
+          <div className="font-semibold">🆕 Enroll Staff</div><div className="text-sm text-zinc-500">iPhone-like 3-step capture</div>
+        </Link>
+        <Link href="/attendance" className="p-6 bg-emerald-50 rounded-xl shadow border border-emerald-200 hover:shadow-md">
+          <div className="font-semibold">📋 Attendance Log</div><div className="text-sm text-zinc-500">All staff, all days, CSV</div>
         </Link>
         <Link href="/admin" className="p-6 bg-white rounded-xl shadow border hover:shadow-md">
-          <div className="font-semibold">🛡️ Admin</div><div className="text-sm text-zinc-500">Employees, today, corrections</div>
-        </Link>
-        <Link href="/kiosk?mode=usb" className="p-6 bg-white rounded-xl shadow border hover:shadow-md">
-          <div className="font-semibold">🔌 USB Cam Test</div><div className="text-sm text-zinc-500">Direct getUserMedia</div>
+          <div className="font-semibold">🛡️ Admin</div><div className="text-sm text-zinc-500">Employees + corrections</div>
         </Link>
       </div>
       <div className="mt-8 p-4 bg-amber-50 border border-amber-200 rounded">

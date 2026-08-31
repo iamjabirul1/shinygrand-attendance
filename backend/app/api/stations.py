@@ -17,6 +17,17 @@ def list_stations(db: Session = Depends(get_db), user=Depends(require_auth)):
     stations = db.query(Station).all()
     return [{"id": s.id, "name": s.name, "is_active": s.is_active, "last_heartbeat": s.last_heartbeat} for s in stations]
 
+@router.get("/public-token")
+def public_token(station_id: str = "GUW-01", db: Session = Depends(get_db)):
+    """Public endpoint for kiosk auto-pair (no admin needed) - long-lived 30d token for dedicated station"""
+    station = db.get(Station, station_id)
+    if not station:
+        station = Station(id=station_id, name="Reception", is_active=True, created_at=now_utc())
+        db.add(station)
+        db.commit()
+    token = create_station_token(station_id)
+    return {"station_id": station_id, "token": token}
+
 @router.post("/pair-qr")
 def pair_qr(station_id: str = "GUW-01", db: Session = Depends(get_db), admin=Depends(require_admin)):
     station = db.get(Station, station_id)
