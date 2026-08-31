@@ -24,6 +24,10 @@ export default function KioskPage() {
   const [enrollForm, setEnrollForm] = useState({ emp_code: "", name: "", phone: "" });
   const [debug, setDebug] = useState("");
   const [notRecognizedCount, setNotRecognizedCount] = useState(0);
+  const [showHelp, setShowHelp] = useState(false);
+  const [cooldown, setCooldown] = useState(0);
+  const [nextAction, setNextAction] = useState<"check_in" | "check_out" | null>(null);
+  const [lastAction, setLastAction] = useState<any>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
 
   // Auto-fetch public token on mount (no admin needed) - 30d long-lived
@@ -49,6 +53,13 @@ export default function KioskPage() {
       .then(() => setDebug((d) => d + " | FaceNet 128-d ready"))
       .catch((e) => setDebug("Face model fail: " + e.message));
   }, []);
+
+  // Cooldown countdown
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const id = setInterval(() => setCooldown((c) => (c > 0 ? c - 1 : 0)), 1000);
+    return () => clearInterval(id);
+  }, [cooldown]);
 
   // Pair QR (still available for phone)
   async function pair() {
@@ -237,12 +248,23 @@ export default function KioskPage() {
             setStatus("error");
             setMsg(j.message || "Already marked");
             setDebug(`Duplicate: ${j.message}`);
+            // Show remaining cooldown
+            const m = j.message?.match(/wait (\d+)s/);
+            if (m) {
+              setCooldown(parseInt(m[1]));
+            } else if (j.remaining) {
+              setCooldown(j.remaining);
+            }
             await new Promise((r) => setTimeout(r, 2000));
           } else {
             setStatus("success");
             setEmployee(j.employee);
-            setMsg(j.message || `${j.status} ${j.employee.name} at ${new Date(j.server_time_ist).toLocaleTimeString()}`);
-            setDebug(`Success: ${j.employee.emp_code} conf ${(j.confidence*100).toFixed(1)}%`);
+            const isCheckIn = j.status === "checked_in";
+            setNextAction(isCheckIn ? "check_out" : "check_in");
+            setLastAction({ employee: j.employee, type: j.status, time: j.server_time || j.server_time_ist });
+            setCooldown(0);
+            setMsg(j.message || `${j.status} ${j.employee.name} at ${new Date(j.server_time_ist).toLocaleTimeString()} → Next: ${isCheckIn ? "Check-Out" : "Check-In"}`);
+            setDebug(`Success: ${j.employee.emp_code} conf ${(j.confidence*100).toFixed(1)}% → next ${isCheckIn ? "out" : "in"}`);
             try { new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA").play(); } catch {}
             await new Promise((r) => setTimeout(r, 2500));
           }
@@ -427,11 +449,16 @@ export default function KioskPage() {
         <div className="font-bold">Hotel Shiny Grand • GUW-01 • Kiosk</div>
         <div className="flex gap-2 items-center">
           <span className="text-xs bg-emerald-600 px-2 py-1 rounded">{mode}</span>
+          <button onClick={() => setShowHelp(true)} className="text-xs bg-blue-600 px-3 py-1 rounded">❓ Help</button>
           <button onClick={() => setMode(mode === "usb" ? "companion" : "usb")} className="text-xs bg-zinc-700 px-3 py-1 rounded">Toggle USB/Companion</button>
           <a href="/admin" className="text-xs bg-white text-black px-3 py-1 rounded">📋 Logs</a>
           <a href="/login" className="text-xs underline">Login</a>
         </div>
       </header>
+      {/* Friendly hint banner */}
+      <div className="bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-xs p-2 text-center">
+        💡 <b>How it works:</b> Stand 1m away → Look at camera → Hold still 1s → Auto <b>{nextAction === "check_out" ? "Check-Out" : "Check-In"}</b> {lastAction && `(Last: ${lastAction.employee?.name || employee?.name} ${lastAction.type} at ${new Date(lastAction.time).toLocaleTimeString()})`} {cooldown > 0 && `• Wait ${cooldown}s`}
+      </div>
 
       <div className="flex-1 grid lg:grid-cols-3 gap-0">
         <div className="lg:col-span-2 relative bg-black flex items-center justify-center">
@@ -462,7 +489,27 @@ export default function KioskPage() {
           </div>
         </div>
 
-        <div className="bg-zinc-900 p-4 space-y-4 overflow-auto max-h-[85vh]">
+          <div className="bg-zinc-900 p-4 space-y-4 overflow-auto max-h-[85vh]">
+            {/* Hint card for first-time users */}
+            <div className="bg-gradient-to-br from-amber-500 to-orange-500 text-black p-3 rounded-xl">
+              <div className="font-bold text-sm">👋 New here? 3 steps:</div>
+              <ol className="text-xs list-decimal ml-4 mt-1 space-y-0.5">
+                <li><b>Pair:</b> Tap QR → scan with phone → Allow camera</li>
+                <li><b>Enroll:</b> New face? → <b>Create Profile</b> (3 angles)</li>
+                <li><b>Scan:</b> Stand 1m, good light, look at camera → auto log</li>
+              </ol>
+              <button onClick={() => setShowHelp(true)} className="mt-2 text-xs underline">Need help? → How check-in/out works</button>
+            </div>
+            <div className="bg-zinc-800 p-3 rounded border border-emerald-500/30">
+              <div className="text-xs font-semibold text-emerald-400">💡 Tips for best scan</div>
+              <ul className="text-xs text-zinc-300 list-disc ml-4 mt-1 space-y-0.5">
+                <li>Stand <b>1 meter</b> away, eye level</li>
+                <li><b>Good light</b> on face, no backlight</li>
+                <li>Look straight at camera, <b>hold still 1s</b></li>
+                <li>Remove mask, plain wall behind helps</li>
+                <li>After <b>Check-In</b>, next scan = <b>Check-Out</b> (no 60s wait for checkout!)</li>
+              </ul>
+            </div>
           <button onClick={pair} className="w-full bg-brand text-white py-3 rounded font-semibold">📱 Pair Phone (QR)</button>
           {qr && (
             <div className="bg-white p-4 rounded text-black text-center">
@@ -529,6 +576,44 @@ export default function KioskPage() {
               </div>
               <div className="text-xs text-zinc-400">Needs admin login at /login first. If not logged in, will prompt.</div>
             </div>
+          </div>
+        </div>
+      )}
+      {showHelp && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-white text-black p-6 rounded-xl max-w-lg w-full max-h-[85vh] overflow-auto">
+            <h2 className="text-xl font-bold">How Check-In / Check-Out Works</h2>
+            <div className="mt-4 space-y-4 text-sm">
+              <div className="bg-emerald-50 p-3 rounded">
+                <div className="font-bold">🔄 Auto toggle (no buttons!)</div>
+                <ul className="list-disc ml-4 mt-1 space-y-1">
+                  <li><b>No open session</b> → next scan = <b>Check-In</b> (records time in)</li>
+                  <li><b>Has open session</b> (checked in, not out) → next scan = <b>Check-Out</b> (records time out + duration)</li>
+                  <li>Example: ARBAZ at 09:00 scans → <b>Check-In</b> → at 18:00 scans → <b>Check-Out (9h)</b></li>
+                </ul>
+              </div>
+              <div className="bg-amber-50 p-3 rounded">
+                <div className="font-bold">⏱️ Timing</div>
+                <ul className="list-disc ml-4 mt-1 space-y-1">
+                  <li><b>No wait</b> for Check-In → Check-Out (you tested ARBAZ and it said “already checked in” — <b>fixed now</b>: only same type blocked 60s)</li>
+                  <li>Duplicate <b>same type</b> within 60s → “Already marked, wait Xs” (prevents double-tap)</li>
+                  <li>Hotel windows: 07:00-09:30, 17:00-18:00, 22:00 IST — but you can scan anytime, log uses server IST</li>
+                </ul>
+              </div>
+              <div className="bg-blue-50 p-3 rounded">
+                <div className="font-bold">📋 Where to see logs?</div>
+                <p>→ <a href="/attendance" className="underline text-blue-600">/attendance</a> (all staff, date picker, CSV) or <a href="/admin" className="underline">/admin</a> → Sessions (In/Out/Duration) + Records (every tap)</p>
+              </div>
+              <div className="bg-zinc-100 p-3 rounded">
+                <div className="font-bold">🆕 First time for staff?</div>
+                <ol className="list-decimal ml-4 mt-1 space-y-1">
+                  <li>Login at <a href="/login" className="underline">/login</a></li>
+                  <li>On kiosk → new face → <b>Create New Profile</b> (3 angles) OR `/enroll` on phone OR `/admin` → Add + Enroll 3 photos</li>
+                  <li>Then scan at `/kiosk` → auto logs</li>
+                </ol>
+              </div>
+            </div>
+            <button onClick={() => setShowHelp(false)} className="mt-4 w-full bg-zinc-900 text-white py-2 rounded">Got it</button>
           </div>
         </div>
       )}

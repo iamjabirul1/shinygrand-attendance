@@ -16,10 +16,13 @@ def process_attendance(db: Session, employee, server_time: datetime, client_time
     - Cooldown 60s duplicate prevention
     - Auto-close stale handled by cron not here
     """
-    # Cooldown: last record for this employee within 60s and same type?
+    open_sess = db.execute(select(AttendanceSession).where(AttendanceSession.employee_id==employee.id, AttendanceSession.status=="open").order_by(desc(AttendanceSession.check_in))).scalars().first()
+    # Determine next action based on open session
+    next_type = "check_out" if open_sess else "check_in"
+
+    # Cooldown: only block if same type as last within 60s (allows quick check-in -> check-out for testing)
     last = db.execute(select(AttendanceRecord).where(AttendanceRecord.employee_id==employee.id).order_by(desc(AttendanceRecord.server_time)).limit(1)).scalars().first()
     if last:
-        # Ensure both are timezone-aware for subtraction
         lt = last.server_time
         if lt.tzinfo is None:
             lt = lt.replace(tzinfo=timezone.utc)
@@ -27,10 +30,10 @@ def process_attendance(db: Session, employee, server_time: datetime, client_time
         if st.tzinfo is None:
             st = st.replace(tzinfo=timezone.utc)
         diff = (st - lt).total_seconds()
-        if diff < settings.ATTENDANCE_COOLDOWN_SECONDS:
-            return {"status": "duplicate", "message": f"Already marked at {last.server_time.isoformat()} ({int(diff)}s ago)", "record": {"id": last.id, "type": last.type}}
-
-    open_sess = db.execute(select(AttendanceSession).where(AttendanceSession.employee_id==employee.id, AttendanceSession.status=="open").order_by(desc(AttendanceSession.check_in))).scalars().first()
+        # Only block duplicate if same type (e.g., check_in -> check_in within 60s), allow check_in -> check_out immediately
+        if diff < settings.ATTENDANCE_COOLDOWN_SECONDS and last.type == next_type:
+            remaining = int(settings.ATTENDANCE_COOLDOWN_SECONDS - diff)
+            return {"status": "duplicate", "message": f"Already {last.type} at {last.server_time.isoformat()} ({int(diff)}s ago) — wait {remaining}s", "record": {"id": last.id, "type": last.type}, "next_type": next_type, "remaining": remaining}
 
     raw_actor_id = actor.get("id") if isinstance(actor, dict) else getattr(actor, "id", None)
     # Validate UUID: station tokens have id "station:GUW-01" which is not UUID -> store None
