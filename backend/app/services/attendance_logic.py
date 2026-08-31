@@ -32,7 +32,16 @@ def process_attendance(db: Session, employee, server_time: datetime, client_time
 
     open_sess = db.execute(select(AttendanceSession).where(AttendanceSession.employee_id==employee.id, AttendanceSession.status=="open").order_by(desc(AttendanceSession.check_in))).scalars().first()
 
-    actor_id = actor.get("id") if isinstance(actor, dict) else getattr(actor, "id", None)
+    raw_actor_id = actor.get("id") if isinstance(actor, dict) else getattr(actor, "id", None)
+    # Validate UUID: station tokens have id "station:GUW-01" which is not UUID -> store None
+    import uuid as _uuid
+    actor_id = None
+    if raw_actor_id:
+        try:
+            _uuid.UUID(str(raw_actor_id))
+            actor_id = str(raw_actor_id)
+        except:
+            actor_id = None
 
     if not open_sess:
         # check_in
