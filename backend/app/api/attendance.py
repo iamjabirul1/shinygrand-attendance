@@ -199,6 +199,37 @@ def verify_embedding(body: VerifyEmbeddingIn, db: Session = Depends(get_db), use
         "message": result.get("message"),
     }
 
+class PinIn(BaseModel):
+    emp_code: str
+    station_id: str = "GUW-01"
+    client_time: str | None = None
+
+@router.post("/pin")
+def pin_attendance(body: PinIn, db: Session = Depends(get_db), user=Depends(require_auth)):
+    """PIN fallback for non-smartphone / no-face users — just emp_code (like 001) — no phone needed"""
+    emp = db.execute(select(Employee).where(Employee.emp_code==body.emp_code, Employee.is_active==True)).scalars().first()
+    if not emp:
+        raise HTTPException(404, f"No active employee with code {body.emp_code}")
+    server_time = now_utc()
+    client_time = None
+    if body.client_time:
+        try:
+            client_time = datetime.fromisoformat(body.client_time.replace("Z","+00:00"))
+        except:
+            client_time=None
+    result = process_attendance(db=db, employee=emp, server_time=server_time, client_time=client_time, station_id=body.station_id, confidence=1.0, liveness_score=None, threshold=1.0, was_offline=False, actor=user)
+    return {
+        "status": result["status"],
+        "employee": {"id": emp.id, "emp_code": emp.emp_code, "name": emp.name},
+        "server_time": server_time.isoformat(),
+        "server_time_ist": to_ist(server_time).isoformat(),
+        "confidence": 1.0,
+        "threshold": 1.0,
+        "session": result.get("session"),
+        "record": result.get("record"),
+        "message": result.get("message") + " (PIN)",
+    }
+
 @router.post("/preview-embedding")
 def preview_embedding(body: VerifyEmbeddingIn, db: Session = Depends(get_db), user=Depends(require_auth)):
     """Preview what would happen without committing - for checkout confirmation"""

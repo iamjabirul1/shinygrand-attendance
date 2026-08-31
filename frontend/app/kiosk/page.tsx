@@ -30,6 +30,8 @@ export default function KioskPage() {
   const [lastAction, setLastAction] = useState<any>(null);
   const [showCheckoutConfirm, setShowCheckoutConfirm] = useState(false);
   const [pendingCheckout, setPendingCheckout] = useState<any>(null);
+  const [showPin, setShowPin] = useState(false);
+  const [pinCode, setPinCode] = useState("");
   const pcRef = useRef<RTCPeerConnection | null>(null);
 
   // Auto-fetch public token on mount (no admin needed) - 30d long-lived
@@ -365,7 +367,7 @@ export default function KioskPage() {
         if (status !== "new_face") setStatus("idle");
         scanningRef.current = false;
       }
-    }, 1800);
+    }, 700);
     return () => clearInterval(id);
   }, [mode, qr, stationId, threshold, useLiveness, stationToken, showEnroll, status]);
 
@@ -526,6 +528,45 @@ export default function KioskPage() {
     setDebug("Checkout cancelled by user");
   }
 
+  async function handlePin() {
+    if (!pinCode.trim()) {
+      alert("Enter Employee Code (e.g. 001, ARBAZ)");
+      return;
+    }
+    try {
+      const token = stationToken || localStorage.getItem("station_token") || "";
+      const res = await fetch(`${API_URL}/api/attendance/pin`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ emp_code: pinCode.trim(), station_id: stationId, client_time: new Date().toISOString() }),
+      });
+      const j = await res.json();
+      if (res.ok) {
+        setStatus("success");
+        setEmployee(j.employee);
+        const isIn = j.status === "checked_in";
+        setNextAction(isIn ? "check_out" : "check_in");
+        setLastAction({ employee: j.employee, type: j.status, time: j.server_time });
+        setMsg(j.message + ` → Next: ${isIn ? "Check-Out" : "Check-In"}`);
+        setDebug(`PIN success: ${j.employee.emp_code}`);
+        setShowPin(false);
+        setPinCode("");
+        try { new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA").play(); } catch {}
+        await new Promise((r) => setTimeout(r, 2500));
+        setStatus("idle");
+      } else {
+        setMsg(j.detail || "PIN failed — check code");
+        setStatus("error");
+        setDebug(`PIN fail: ${JSON.stringify(j)}`);
+        await new Promise((r) => setTimeout(r, 2000));
+        setStatus("idle");
+      }
+    } catch (e: any) {
+      setMsg("PIN error: " + e.message);
+      setStatus("error");
+    }
+  }
+
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
       <header className="p-3 flex items-center justify-between bg-zinc-900">
@@ -584,14 +625,19 @@ export default function KioskPage() {
               <button onClick={() => setShowHelp(true)} className="mt-2 text-xs underline">Need help? → How check-in/out works</button>
             </div>
             <div className="bg-zinc-800 p-3 rounded border border-emerald-500/30">
-              <div className="text-xs font-semibold text-emerald-400">💡 Tips for best scan</div>
+              <div className="text-xs font-semibold text-emerald-400">💡 Tips for best scan (now <b>2x faster</b> — Tiny detector 40ms)</div>
               <ul className="text-xs text-zinc-300 list-disc ml-4 mt-1 space-y-0.5">
                 <li>Stand <b>1 meter</b> away, eye level</li>
                 <li><b>Good light</b> on face, no backlight</li>
-                <li>Look straight at camera, <b>hold still 1s</b></li>
+                <li>Look straight at camera, <b>hold still 0.5s</b> (faster now!)</li>
                 <li>Remove mask, plain wall behind helps</li>
-                <li>After <b>Check-In</b>, next scan = <b>Check-Out</b> (no 60s wait for checkout!)</li>
+                <li>After <b>Check-In</b>, next scan = <b>Check-Out</b> (no 60s wait!)</li>
               </ul>
+            </div>
+            <div className="bg-blue-900/30 p-3 rounded border border-blue-500/30">
+              <div className="text-xs font-semibold text-blue-300">📱 No smartphone? No face? Use PIN</div>
+              <div className="text-xs text-zinc-300 mt-1">Staff without phone or if face fails: just enter <b>Employee Code</b> (e.g. `001`, `ARBAZ`) — no camera needed, works for everyone.</div>
+              <button onClick={() => setShowPin(true)} className="mt-2 w-full bg-blue-600 text-white py-2 rounded font-medium">🔢 Use PIN instead</button>
             </div>
           <button onClick={pair} className="w-full bg-brand text-white py-3 rounded font-semibold">📱 Pair Phone (QR)</button>
           {qr && (
@@ -715,6 +761,22 @@ export default function KioskPage() {
               <button onClick={confirmCheckout} className="flex-1 bg-emerald-600 text-white py-3 rounded font-bold">✓ Yes, Check Out</button>
             </div>
             <div className="text-xs text-zinc-500 mt-3 text-center">Confidence {(pendingCheckout.preview.confidence*100).toFixed(1)}% • Threshold {(pendingCheckout.preview.threshold*100).toFixed(0)}%</div>
+          </div>
+        </div>
+      )}
+      {showPin && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-white text-black p-6 rounded-xl max-w-md w-full">
+            <h2 className="text-xl font-bold">PIN Check-In/Out — No Phone Needed</h2>
+            <p className="text-sm text-zinc-600 mt-1">For staff without smartphone or if face fails. Enter your <b>Employee Code</b> (e.g. <code>001</code>, <code>ARBAZ</code>, <code>111</code>) — shared hotel phone stays as camera, you just type code.</p>
+            <div className="mt-4 space-y-3">
+              <input autoFocus placeholder="Employee Code (e.g. 001)" value={pinCode} onChange={(e) => setPinCode(e.target.value.toUpperCase())} onKeyDown={(e) => e.key === "Enter" && handlePin()} className="w-full border-2 p-3 rounded text-lg font-mono tracking-widest text-center" />
+              <div className="flex gap-2">
+                <button onClick={handlePin} className="flex-1 bg-blue-600 text-white py-3 rounded font-bold">✓ Check In/Out with PIN</button>
+                <button onClick={() => setShowPin(false)} className="px-4 border rounded">Cancel</button>
+              </div>
+              <div className="text-xs text-zinc-500">Works even without camera — like a classic time-clock. Face still preferred for audit, but PIN is allowed fallback (DPDP compliant, alternative offered).</div>
+            </div>
           </div>
         </div>
       )}

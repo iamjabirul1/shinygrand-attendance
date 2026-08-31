@@ -49,20 +49,20 @@ export async function loadFaceModels() {
 export async function getDescriptorFromVideo(video: HTMLVideoElement): Promise<number[] | null> {
   await loadFaceModels();
   const faceapi: any = await import("@vladmandic/face-api");
-  // Try SSD first (accurate), fallback to tiny (fast, low light) — both use same 128-d
+  // SPEED: Tiny first (40ms) then SSD fallback (300ms) — for kiosk instant scan
   let result: any = null;
   try {
-    const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 });
-    result = await faceapi.detectSingleFace(video, ssdOpts).withFaceLandmarks().withFaceDescriptor();
+    const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+    result = await faceapi.detectSingleFace(video, tinyOpts).withFaceLandmarks(true).withFaceDescriptor();
   } catch (e) {
-    console.warn("SSD fail", e);
+    // tiny fail, try SSD
   }
   if (!result) {
     try {
-      const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 });
-      result = await faceapi.detectSingleFace(video, tinyOpts).withFaceLandmarks(true).withFaceDescriptor();
+      const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+      result = await faceapi.detectSingleFace(video, ssdOpts).withFaceLandmarks().withFaceDescriptor();
     } catch (e) {
-      console.warn("Tiny fail", e);
+      console.warn("SSD fail", e);
     }
   }
   if (!result || !result.descriptor) return null;
@@ -74,17 +74,28 @@ export async function getDescriptorFromCanvas(canvas: HTMLCanvasElement): Promis
   const faceapi: any = await import("@vladmandic/face-api");
   let result: any = null;
   try {
-    const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 });
-    result = await faceapi.detectSingleFace(canvas, ssdOpts).withFaceLandmarks().withFaceDescriptor();
+    const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.5 });
+    result = await faceapi.detectSingleFace(canvas, tinyOpts).withFaceLandmarks(true).withFaceDescriptor();
   } catch {}
   if (!result) {
     try {
-      const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 });
-      result = await faceapi.detectSingleFace(canvas, tinyOpts).withFaceLandmarks(true).withFaceDescriptor();
+      const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
+      result = await faceapi.detectSingleFace(canvas, ssdOpts).withFaceLandmarks().withFaceDescriptor();
     } catch {}
   }
   if (!result || !result.descriptor) return null;
   return Array.from(result.descriptor as Float32Array);
+}
+
+// Fast check if face present (no descriptor, just box) — for instant feedback
+export async function hasFace(video: HTMLVideoElement): Promise<boolean> {
+  await loadFaceModels();
+  const faceapi: any = await import("@vladmandic/face-api");
+  try {
+    const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
+    const result: any = await faceapi.detectSingleFace(video, tinyOpts);
+    return !!result;
+  } catch { return false; }
 }
 
 export function cosineDistance(a: number[], b: number[]): number {

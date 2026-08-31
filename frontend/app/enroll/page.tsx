@@ -56,12 +56,10 @@ export default function EnrollPage() {
       // Countdown with proper state flush - use local variable and ensure UI updates
       for (let c = 3; c > 0; c--) {
         setCountdown(c);
-        // Force React to flush before delay
-        await new Promise((r) => setTimeout(r, 800));
+        await new Promise((r) => setTimeout(r, 500));
       }
       setCountdown(0);
-      // Small delay to let video settle after countdown
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 200));
       const v = videoRef.current;
       if (!v || v.videoWidth === 0 || v.readyState < 2) {
         alert(`No camera frame in step ${i + 1} - check permission and try again`);
