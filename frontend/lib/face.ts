@@ -9,9 +9,30 @@ export async function loadFaceModels() {
   if (loaded) return;
   if (loadPromise) return loadPromise;
   loadPromise = (async () => {
-    const faceapi = await import("@vladmandic/face-api");
-    // @ts-ignore - faceapi needs to be global for some internals
+    // Fix WASM backend not initialized: ensure tf is ready before face-api
+    const tf: any = await import("@tensorflow/tfjs");
+    try {
+      await tf.ready();
+      // Prefer WebGL (GPU) if available, fallback to CPU/WASM — avoids WASM init race
+      const current = tf.getBackend();
+      if (!current || current === "cpu") {
+        try { await tf.setBackend("webgl"); await tf.ready(); } catch {}
+        if (tf.getBackend() !== "webgl") {
+          try { await tf.setBackend("cpu"); await tf.ready(); } catch {}
+        }
+      }
+      console.log("tf backend:", tf.getBackend());
+    } catch (e) {
+      console.warn("tf ready failed", e);
+    }
+    const faceapi: any = await import("@vladmandic/face-api");
+    // Ensure face-api uses same tf instance
+    // @ts-ignore
+    if (faceapi.tf) {
+      try { await faceapi.tf.ready(); } catch {}
+    }
     const modelUrl = "/models";
+    // Load tiny first (fast, low mem) + SSD for accuracy — both cached, ~12MB
     await Promise.all([
       faceapi.nets.ssdMobilenetv1.loadFromUri(modelUrl),
       faceapi.nets.faceLandmark68Net.loadFromUri(modelUrl),
@@ -20,7 +41,7 @@ export async function loadFaceModels() {
       faceapi.nets.faceLandmark68TinyNet.loadFromUri(modelUrl),
     ]);
     loaded = true;
-    console.log("face-api models loaded");
+    console.log("face-api models loaded, tf:", tf.getBackend());
   })();
   return loadPromise;
 }
@@ -28,26 +49,41 @@ export async function loadFaceModels() {
 export async function getDescriptorFromVideo(video: HTMLVideoElement): Promise<number[] | null> {
   await loadFaceModels();
   const faceapi: any = await import("@vladmandic/face-api");
-  // Use SSD for best accuracy (like mobile apps), fallback to tiny if needed
-  const options = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
-  const result: any = await faceapi
-    .detectSingleFace(video, options)
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-  if (!result) return null;
-  // result.descriptor is Float32Array 128
+  // Try SSD first (accurate), fallback to tiny (fast, low light) — both use same 128-d
+  let result: any = null;
+  try {
+    const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 });
+    result = await faceapi.detectSingleFace(video, ssdOpts).withFaceLandmarks().withFaceDescriptor();
+  } catch (e) {
+    console.warn("SSD fail", e);
+  }
+  if (!result) {
+    try {
+      const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 });
+      result = await faceapi.detectSingleFace(video, tinyOpts).withFaceLandmarks(true).withFaceDescriptor();
+    } catch (e) {
+      console.warn("Tiny fail", e);
+    }
+  }
+  if (!result || !result.descriptor) return null;
   return Array.from(result.descriptor as Float32Array);
 }
 
 export async function getDescriptorFromCanvas(canvas: HTMLCanvasElement): Promise<number[] | null> {
   await loadFaceModels();
   const faceapi: any = await import("@vladmandic/face-api");
-  const options = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 });
-  const result: any = await faceapi
-    .detectSingleFace(canvas, options)
-    .withFaceLandmarks()
-    .withFaceDescriptor();
-  if (!result) return null;
+  let result: any = null;
+  try {
+    const ssdOpts = new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 });
+    result = await faceapi.detectSingleFace(canvas, ssdOpts).withFaceLandmarks().withFaceDescriptor();
+  } catch {}
+  if (!result) {
+    try {
+      const tinyOpts = new faceapi.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.4 });
+      result = await faceapi.detectSingleFace(canvas, tinyOpts).withFaceLandmarks(true).withFaceDescriptor();
+    } catch {}
+  }
+  if (!result || !result.descriptor) return null;
   return Array.from(result.descriptor as Float32Array);
 }
 
