@@ -28,6 +28,8 @@ export default function KioskPage() {
   const [cooldown, setCooldown] = useState(0);
   const [nextAction, setNextAction] = useState<"check_in" | "check_out" | null>(null);
   const [lastAction, setLastAction] = useState<any>(null);
+  const [showCheckoutConfirm, setShowCheckoutConfirm] = useState(false);
+  const [pendingCheckout, setPendingCheckout] = useState<any>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
 
   // Auto-fetch public token on mount (no admin needed) - 30d long-lived
@@ -193,15 +195,43 @@ export default function KioskPage() {
           return;
         }
         // Try browser FaceNet 128-d first (cloud accurate, no Docker, like mobile apps)
+        // First preview to know if next is check_in or check_out (for checkout confirmation)
         let res: Response | null = null;
         let usedEmbedding = false;
+        let previewData: any = null;
+        let currentDesc: number[] | null = null;
         try {
           const v = (mode === "usb" ? videoRef.current : remoteVideoRef.current || videoRef.current) as HTMLVideoElement | null;
           if (v && v.readyState >= 2) {
             const desc = await getDescriptorFromVideo(v);
             if (desc) {
-              // Use embedding endpoint (128-d, threshold 0.6 for face-api)
-              const embThreshold = threshold < 0.5 ? 0.6 : threshold; // auto map 0.42->0.6 for 128-d
+              currentDesc = desc;
+              const embThreshold = threshold < 0.5 ? 0.6 : threshold;
+              // Preview first
+              const previewRes = await fetch(`${API_URL}/api/attendance/preview-embedding`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                body: JSON.stringify({
+                  embedding: desc,
+                  station_id: stationId,
+                  client_time: new Date().toISOString(),
+                  threshold: embThreshold,
+                }),
+              });
+              if (previewRes.ok) {
+                previewData = await previewRes.json();
+                if (previewData.next_type === "check_out") {
+                  // Show checkout confirmation popup
+                  setPendingCheckout({ desc, threshold: embThreshold, preview: previewData });
+                  setShowCheckoutConfirm(true);
+                  setStatus("idle");
+                  setMsg(`Hi ${previewData.employee.name} — you checked in at ${new Date(previewData.check_in_ist).toLocaleTimeString()} — check out now?`);
+                  setDebug(`Preview: ${previewData.employee.emp_code} next=check_out dur ${previewData.duration_minutes}min`);
+                  scanningRef.current = false;
+                  return;
+                }
+              }
+              // If preview says check_in or failed, proceed directly to verify
               res = await fetch(`${API_URL}/api/attendance/verify-embedding`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -215,14 +245,15 @@ export default function KioskPage() {
                 }),
               });
               usedEmbedding = true;
-              setDebug(`FaceNet 128-d used (th ${embThreshold})`);
+              setDebug(`FaceNet 128-d used (th ${embThreshold}) preview ${previewData?.next_type || "direct"}`);
             }
           }
         } catch (e: any) {
           setDebug(`FaceNet fail, fallback to image: ${e.message}`);
         }
-        // Fallback to image-based (hash) if no descriptor
+        // Fallback to image-based (hash) if no descriptor and no res
         if (!res) {
+          // For image fallback, also preview via image? For now direct verify
           res = await fetch(`${API_URL}/api/attendance/verify`, {
             method: "POST",
             headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -443,6 +474,58 @@ export default function KioskPage() {
     }
   }
 
+  async function confirmCheckout() {
+    if (!pendingCheckout) return;
+    setShowCheckoutConfirm(false);
+    setStatus("scanning");
+    setMsg("Checking out...");
+    try {
+      const token = stationToken || localStorage.getItem("station_token") || localStorage.getItem("token") || "";
+      const res = await fetch(`${API_URL}/api/attendance/verify-embedding`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({
+          embedding: pendingCheckout.desc,
+          station_id: stationId,
+          client_time: new Date().toISOString(),
+          liveness_score: useLiveness ? 0.9 : null,
+          threshold: pendingCheckout.threshold,
+          was_offline: false,
+        }),
+      });
+      if (res.ok) {
+        const j = await res.json();
+        setStatus("success");
+        setEmployee(j.employee);
+        setNextAction("check_in");
+        setLastAction({ employee: j.employee, type: j.status, time: j.server_time || j.server_time_ist });
+        setMsg(j.message || `Checked out, worked ${j.session?.duration_minutes || "?"} min`);
+        setDebug(`Checked out: ${j.employee.emp_code} ${j.session?.duration_minutes}min`);
+        try { new Audio("data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA").play(); } catch {}
+        await new Promise((r) => setTimeout(r, 2500));
+        setStatus("idle");
+      } else {
+        const txt = await res.text();
+        setMsg("Checkout failed: " + txt.slice(0,80));
+        setStatus("error");
+        await new Promise((r) => setTimeout(r, 2000));
+        setStatus("idle");
+      }
+    } catch (e: any) {
+      setMsg("Checkout error: " + e.message);
+      setStatus("error");
+    }
+    setPendingCheckout(null);
+  }
+
+  function cancelCheckout() {
+    setShowCheckoutConfirm(false);
+    setPendingCheckout(null);
+    setStatus("idle");
+    setMsg("Checkout cancelled — ready to scan");
+    setDebug("Checkout cancelled by user");
+  }
+
   return (
     <main className="min-h-screen bg-black text-white flex flex-col">
       <header className="p-3 flex items-center justify-between bg-zinc-900">
@@ -614,6 +697,24 @@ export default function KioskPage() {
               </div>
             </div>
             <button onClick={() => setShowHelp(false)} className="mt-4 w-full bg-zinc-900 text-white py-2 rounded">Got it</button>
+          </div>
+        </div>
+      )}
+      {showCheckoutConfirm && pendingCheckout && (
+        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+          <div className="bg-white text-black p-6 rounded-xl max-w-md w-full">
+            <h2 className="text-xl font-bold">Confirm Check-Out?</h2>
+            <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded">
+              <div className="font-bold text-lg">{pendingCheckout.preview.employee.name} ({pendingCheckout.preview.employee.emp_code})</div>
+              <div className="text-sm text-zinc-600 mt-1">Checked in at <b>{new Date(pendingCheckout.preview.check_in_ist).toLocaleString()}</b></div>
+              <div className="text-sm text-zinc-600">Worked so far: <b>{pendingCheckout.preview.duration_minutes} minutes</b> ({Math.floor(pendingCheckout.preview.duration_minutes/60)}h {pendingCheckout.preview.duration_minutes%60}m)</div>
+              <div className="text-sm mt-2">Are you sure you want to <b>check out</b> now at {new Date().toLocaleTimeString()}?</div>
+            </div>
+            <div className="flex gap-3 mt-6">
+              <button onClick={cancelCheckout} className="flex-1 border border-zinc-300 py-3 rounded font-medium">Cancel</button>
+              <button onClick={confirmCheckout} className="flex-1 bg-emerald-600 text-white py-3 rounded font-bold">✓ Yes, Check Out</button>
+            </div>
+            <div className="text-xs text-zinc-500 mt-3 text-center">Confidence {(pendingCheckout.preview.confidence*100).toFixed(1)}% • Threshold {(pendingCheckout.preview.threshold*100).toFixed(0)}%</div>
           </div>
         </div>
       )}

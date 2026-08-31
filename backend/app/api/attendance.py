@@ -199,6 +199,81 @@ def verify_embedding(body: VerifyEmbeddingIn, db: Session = Depends(get_db), use
         "message": result.get("message"),
     }
 
+@router.post("/preview-embedding")
+def preview_embedding(body: VerifyEmbeddingIn, db: Session = Depends(get_db), user=Depends(require_auth)):
+    """Preview what would happen without committing - for checkout confirmation"""
+    if len(body.embedding) not in (128, 512):
+        raise HTTPException(400, f"embedding must be 128 or 512-d, got {len(body.embedding)}")
+    def pad512(emb):
+        if len(emb) == 512:
+            return emb
+        if len(emb) == 128:
+            return emb + [0.0]*384
+        return (emb + [0.0]*512)[:512]
+    query_emb = pad512(body.embedding)
+    rows = db.execute(select(EmployeeEmbedding, Employee).join(Employee, Employee.id==EmployeeEmbedding.employee_id).where(Employee.is_active==True, EmployeeEmbedding.is_current==True)).all()
+    if not rows:
+        raise HTTPException(400, "no enrolled employees")
+    import numpy as np
+    def cosine_dist(a,b):
+        import json as _json
+        if isinstance(b, str):
+            try:
+                b = _json.loads(b)
+            except:
+                return 1.0
+        if len(a) != len(b):
+            maxlen = max(len(a), len(b))
+            a = (a + [0.0]*maxlen)[:maxlen]
+            b = (b + [0.0]*maxlen)[:maxlen]
+        a = np.array(a, dtype=np.float32)
+        b = np.array(b, dtype=np.float32)
+        a = a / (np.linalg.norm(a)+1e-9)
+        b = b / (np.linalg.norm(b)+1e-9)
+        return float(1 - np.dot(a,b))
+    candidates=[]
+    for emb_row, emp in rows:
+        dist = cosine_dist(query_emb, emb_row.embedding)
+        candidates.append((dist, emp, emb_row))
+    candidates.sort(key=lambda x: x[0])
+    top3 = candidates[:3]
+    best_dist, best_emp, best_emb = top3[0]
+    default_thresh = 0.55 if len(body.embedding)==128 else settings.ATTENDANCE_THRESHOLD
+    threshold = body.threshold or default_thresh
+    confidence = 1 - best_dist
+    if best_dist > threshold:
+        if best_dist < threshold+0.15:
+            return {"status": "ambiguous", "message": f"Low confidence ({confidence:.2f})", "candidates": [{"emp_code": e.emp_code, "name": e.name, "distance": d, "similarity": 1-d} for d,e,_ in top3], "threshold": threshold}
+        raise HTTPException(404, f"Not recognized (similarity {confidence:.2f})")
+    # Check open session to know next type
+    from sqlalchemy import select as _select, desc as _desc
+    open_sess = db.execute(_select(AttendanceSession).where(AttendanceSession.employee_id==best_emp.id, AttendanceSession.status=="open").order_by(_desc(AttendanceSession.check_in))).scalars().first()
+    next_type = "check_out" if open_sess else "check_in"
+    # If next is check_out, include check_in time and duration
+    preview = {
+        "status": "preview",
+        "next_type": next_type,
+        "employee": {"id": best_emp.id, "emp_code": best_emp.emp_code, "name": best_emp.name},
+        "confidence": confidence,
+        "distance": best_dist,
+        "threshold": threshold,
+    }
+    if open_sess:
+        preview["check_in_time"] = open_sess.check_in.isoformat()
+        preview["check_in_ist"] = to_ist(open_sess.check_in).isoformat()
+        # Duration so far
+        from datetime import timezone as _tz
+        ci = open_sess.check_in
+        if ci.tzinfo is None:
+            ci = ci.replace(tzinfo=_tz.utc)
+        now = now_utc()
+        dur = int((now - ci).total_seconds() // 60)
+        preview["duration_minutes"] = dur
+        preview["message"] = f"{best_emp.name} checked in at {to_ist(open_sess.check_in).strftime('%I:%M %p')} — worked {dur} min — check out now?"
+    else:
+        preview["message"] = f"Welcome {best_emp.name} — check in now?"
+    return preview
+
 @router.get("/")
 def list_attendance(
     from_date: str | None = Query(None, description="YYYY-MM-DD IST"),
