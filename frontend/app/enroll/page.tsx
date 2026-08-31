@@ -53,26 +53,43 @@ export default function EnrollPage() {
     const embeddings: number[][] = [];
     for (let i = 0; i < 3; i++) {
       setMsg(prompts[i] + ` (${i + 1}/3)`);
+      // Countdown with proper state flush - use local variable and ensure UI updates
       for (let c = 3; c > 0; c--) {
         setCountdown(c);
-        await new Promise((r) => setTimeout(r, 700));
+        // Force React to flush before delay
+        await new Promise((r) => setTimeout(r, 800));
       }
       setCountdown(0);
+      // Small delay to let video settle after countdown
+      await new Promise((r) => setTimeout(r, 300));
       const v = videoRef.current;
-      if (!v || v.videoWidth === 0) {
-        alert("No camera frame - check permission");
+      if (!v || v.videoWidth === 0 || v.readyState < 2) {
+        alert(`No camera frame in step ${i + 1} - check permission and try again`);
+        setMsg(`Failed step ${i + 1} - no camera`);
+        setCountdown(0);
         return;
       }
-      setMsg(`Capturing ${i + 1}/3 - detecting face...`);
-      const desc = await getDescriptorFromVideo(v);
+      setMsg(`Capturing ${i + 1}/3 - detecting face... (hold still)`);
+      // Add timeout for face detection to avoid stuck at 1
+      let desc: number[] | null = null;
+      try {
+        const timeout = new Promise<null>((_, rej) => setTimeout(() => rej(new Error("Face detection timeout - try better light")), 8000));
+        desc = await Promise.race([getDescriptorFromVideo(v), timeout]);
+      } catch (e: any) {
+        alert(`Step ${i + 1} failed: ${e.message}. Center face, good light, no mask.`);
+        setMsg(`Failed step ${i + 1}: ${e.message}`);
+        setCountdown(0);
+        return;
+      }
       if (!desc) {
-        alert(`No face detected in step ${i + 1} - center face, good light, try again`);
-        setMsg(`Failed step ${i + 1} - no face, retry`);
+        alert(`No face detected in step ${i + 1} - center face, good light, remove glasses/mask, try again. (Tip: move closer, 1m, plain wall behind)`);
+        setMsg(`Failed step ${i + 1} - no face, retry from start`);
+        setCountdown(0);
         return;
       }
       embeddings.push(desc);
-      setMsg(`Captured ${i + 1}/3 ✓`);
-      await new Promise((r) => setTimeout(r, 400));
+      setMsg(`Captured ${i + 1}/3 ✓ - ${i < 2 ? "next..." : "done"}`);
+      await new Promise((r) => setTimeout(r, 500));
     }
 
     try {

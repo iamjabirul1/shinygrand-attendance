@@ -321,81 +321,100 @@ export default function KioskPage() {
       alert("Enter Employee Code and Name");
       return;
     }
-    // Capture 3 frames as enrollment
-    const captures: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      const b = captureBase64();
-      if (b) captures.push(b);
-      await new Promise((r) => setTimeout(r, 400));
-    }
-    if (captures.length === 0) {
-      alert("No camera frame - allow camera and try again");
+    const adminToken = localStorage.getItem("token");
+    if (!adminToken) {
+      alert("Please login as admin at /login first, then try again");
+      window.open("/login", "_blank");
       return;
     }
-    setMsg("Enrolling...");
+    // Use browser FaceNet 128-d (cloud accurate, no Docker) - same as /enroll page
+    const prompts = ["Face forward", "Turn LEFT", "Turn RIGHT"];
+    const embeddings: number[][] = [];
+    setMsg("Starting 3-step capture...");
+    for (let i = 0; i < 3; i++) {
+      setMsg(`${prompts[i]} (${i + 1}/3) - hold still...`);
+      // Countdown 3-2-1 with UI
+      for (let c = 3; c > 0; c--) {
+        setMsg(`${prompts[i]} (${i + 1}/3) - ${c}`);
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      const v = (mode === "usb" ? videoRef.current : remoteVideoRef.current || videoRef.current) as HTMLVideoElement | null;
+      if (!v || v.videoWidth === 0 || v.readyState < 2) {
+        alert(`No camera frame step ${i + 1} - allow camera, try USB toggle`);
+        setMsg(`Failed step ${i + 1} - no camera`);
+        return;
+      }
+      setMsg(`Capturing ${i + 1}/3 - detecting face...`);
+      let desc: number[] | null = null;
+      try {
+        const timeout = new Promise<null>((_, rej) => setTimeout(() => rej(new Error("Face detection timeout - good light, center face")), 8000));
+        desc = await Promise.race([getDescriptorFromVideo(v), timeout]);
+      } catch (e: any) {
+        alert(`Step ${i + 1} failed: ${e.message}`);
+        setMsg(`Failed ${i + 1}: ${e.message}`);
+        return;
+      }
+      if (!desc) {
+        alert(`No face in step ${i + 1} - center face, 1m, plain wall, try again`);
+        setMsg(`Failed ${i + 1} - no face`);
+        return;
+      }
+      embeddings.push(desc);
+      setMsg(`Captured ${i + 1}/3 ✓`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    if (embeddings.length !== 3) {
+      alert("Failed to capture 3 faces");
+      return;
+    }
+    setMsg("Enrolling (FaceNet 128-d)...");
     try {
-      const adminToken = localStorage.getItem("token");
-      // First create employee
-      const h: any = { "Content-Type": "application/json", ...(adminToken ? { Authorization: `Bearer ${adminToken}` } : {}) };
-      // If no admin token, try with station token as fallback (will fail if not admin, so prompt login)
+      const h: any = { "Content-Type": "application/json", Authorization: `Bearer ${adminToken}` };
       let empRes = await fetch(`${API_URL}/api/employees/`, {
         method: "POST",
         headers: h,
         body: JSON.stringify({ emp_code: enrollForm.emp_code, name: enrollForm.name, phone: enrollForm.phone, role: "Staff" }),
       });
-      if (!empRes.ok && empRes.status === 401) {
-        alert("Please login as admin at /login first, then try again");
-        window.open("/login", "_blank");
-        return;
-      }
+      let emp: any;
       if (!empRes.ok) {
         const t = await empRes.text();
         if (t.includes("exists")) {
-          // Find existing id
-          const list = await fetch(`${API_URL}/api/employees/`, { headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : { Authorization: `Bearer ${stationToken}` } }).then((r) => r.json());
+          const list = await fetch(`${API_URL}/api/employees/`, { headers: h }).then((r) => r.json());
           const found = list.find((e: any) => e.emp_code === enrollForm.emp_code);
           if (!found) throw new Error(t);
-          // use found
-          // enroll
-          const fd = new FormData();
-          for (let i = 0; i < captures.length; i++) {
-            const res = await fetch(captures[i]);
-            const blob = await res.blob();
-            fd.append("files", blob, `face${i}.jpg`);
-          }
-          const enrollRes = await fetch(`${API_URL}/api/employees/${found.id}/enroll`, {
-            method: "POST",
-            headers: adminToken ? { Authorization: `Bearer ${adminToken}` } : { Authorization: `Bearer ${stationToken}` },
-            body: fd,
-          });
-          if (!enrollRes.ok) throw new Error(await enrollRes.text());
-          alert(`Updated face for ${found.name} — ${enrollForm.emp_code}`);
-          setShowEnroll(false);
-          setStatus("idle");
-          failCountRef.current = 0;
+          emp = found;
+          setMsg(`Updating ${found.name}...`);
+        } else if (t.includes("expired")) {
+          localStorage.removeItem("token");
+          alert("Session expired, login again");
+          window.open("/login", "_blank");
           return;
         } else throw new Error(t);
+      } else {
+        emp = await empRes.json();
       }
-      const emp = await empRes.json();
-      // Now enroll faces
-      const fd = new FormData();
-      for (let i = 0; i < captures.length; i++) {
-        const res = await fetch(captures[i]);
-        const blob = await res.blob();
-        fd.append("files", blob, `face${i}.jpg`);
-      }
-      const headers: any = adminToken ? { Authorization: `Bearer ${adminToken}` } : { Authorization: `Bearer ${stationToken}` };
-      const enrollRes = await fetch(`${API_URL}/api/employees/${emp.id}/enroll`, {
+      const enrollRes = await fetch(`${API_URL}/api/employees/${emp.id}/enroll-embedding`, {
         method: "POST",
-        headers,
-        body: fd,
+        headers: h,
+        body: JSON.stringify({ embeddings, quality_scores: [0.9, 0.9, 0.9] }),
       });
-      if (!enrollRes.ok) throw new Error(await enrollRes.text());
-      alert(`Created ${enrollForm.name} (${enrollForm.emp_code}) and enrolled ${captures.length} faces! Now try scanning again.`);
+      if (!enrollRes.ok) {
+        const t = await enrollRes.text();
+        if (t.includes("expired")) {
+          localStorage.removeItem("token");
+          alert("Session expired, login again");
+          window.open("/login", "_blank");
+          return;
+        }
+        throw new Error(t);
+      }
+      alert(`Created ${enrollForm.name} (${enrollForm.emp_code}) and enrolled 3 faces (FaceNet)! Now try scanning again.`);
       setShowEnroll(false);
       setEnrollForm({ emp_code: "", name: "", phone: "" });
       failCountRef.current = 0;
       setStatus("idle");
+      setMsg(`Enrolled ${enrollForm.name} ✓ - try scanning now`);
     } catch (e: any) {
       alert("Enroll failed: " + e.message);
       setMsg("Enroll failed: " + e.message.slice(0,80));
