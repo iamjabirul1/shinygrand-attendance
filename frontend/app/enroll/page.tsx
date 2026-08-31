@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { API_URL, authHeaders } from "@/lib/api";
+import { loadFaceModels, getDescriptorFromVideo } from "@/lib/face";
 
 export default function EnrollPage() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -13,13 +14,16 @@ export default function EnrollPage() {
     let s: MediaStream;
     (async () => {
       try {
+        setMsg("Loading face model (12MB)...");
+        await loadFaceModels();
         s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 1280 }, audio: false });
         if (videoRef.current) {
           videoRef.current.srcObject = s;
           await videoRef.current.play();
+          setMsg("Model ready — center face, good light");
         }
       } catch (e: any) {
-        setMsg("Camera fail: " + e.message + " - need HTTPS and permission");
+        setMsg("Camera/model fail: " + e.message + " - need HTTPS and permission");
       }
     })();
     return () => s?.getTracks().forEach((t) => t.stop());
@@ -44,24 +48,30 @@ export default function EnrollPage() {
       window.open("/login", "_blank");
       return;
     }
-    // Guided capture like iPhone: 3 steps
+    // Guided capture like iPhone: 3 steps — now using browser FaceNet 128-d (cloud accurate, no Docker)
     const prompts = ["Face forward - hold still", "Turn slightly LEFT", "Turn slightly RIGHT"];
-    const captures: string[] = [];
+    const embeddings: number[][] = [];
     for (let i = 0; i < 3; i++) {
       setMsg(prompts[i] + ` (${i + 1}/3)`);
-      // countdown 2s
       for (let c = 3; c > 0; c--) {
         setCountdown(c);
         await new Promise((r) => setTimeout(r, 700));
       }
       setCountdown(0);
-      const b = capture();
-      if (!b) {
-        alert("No frame - check camera");
+      const v = videoRef.current;
+      if (!v || v.videoWidth === 0) {
+        alert("No camera frame - check permission");
         return;
       }
-      captures.push(b);
-      setMsg(`Captured ${i + 1}/3`);
+      setMsg(`Capturing ${i + 1}/3 - detecting face...`);
+      const desc = await getDescriptorFromVideo(v);
+      if (!desc) {
+        alert(`No face detected in step ${i + 1} - center face, good light, try again`);
+        setMsg(`Failed step ${i + 1} - no face, retry`);
+        return;
+      }
+      embeddings.push(desc);
+      setMsg(`Captured ${i + 1}/3 ✓`);
       await new Promise((r) => setTimeout(r, 400));
     }
 
@@ -72,35 +82,50 @@ export default function EnrollPage() {
       let emp: any;
       if (!empRes.ok) {
         const t = await empRes.text();
-        if (t.includes("exists")) {
+        if (t.includes("exists") || t.includes("Signature has expired")) {
+          if (t.includes("expired")) {
+            localStorage.removeItem("token");
+            alert("Session expired — please login again at /login, then retry enroll");
+            window.open("/login", "_blank");
+            return;
+          }
           const list = await fetch(`${API_URL}/api/employees/`, { headers: authHeaders() as any }).then((r) => r.json());
           emp = list.find((e: any) => e.emp_code === form.emp_code);
           if (!emp) throw new Error(t);
-          setMsg("Employee exists, updating face...");
+          setMsg("Employee exists, updating face (browser FaceNet)...");
         } else throw new Error(t);
       } else {
         emp = await empRes.json();
       }
 
-      const fd = new FormData();
-      for (let i = 0; i < captures.length; i++) {
-        const res = await fetch(captures[i]);
-        const blob = await res.blob();
-        fd.append("files", blob, `face${i}.jpg`);
-      }
-      setMsg("Uploading faces...");
-      const enrollRes = await fetch(`${API_URL}/api/employees/${emp.id}/enroll`, {
+      setMsg("Uploading 128-d embeddings (cloud)...");
+      const enrollRes = await fetch(`${API_URL}/api/employees/${emp.id}/enroll-embedding`, {
         method: "POST",
-        headers: authHeaders() as any,
-        body: fd,
+        headers: { "Content-Type": "application/json", ...authHeaders() } as any,
+        body: JSON.stringify({ embeddings, quality_scores: [0.9, 0.9, 0.9] }),
       });
-      if (!enrollRes.ok) throw new Error(await enrollRes.text());
+      if (!enrollRes.ok) {
+        const t = await enrollRes.text();
+        if (t.includes("expired")) {
+          localStorage.removeItem("token");
+          alert("Session expired — login again at /login");
+          window.open("/login", "_blank");
+          return;
+        }
+        throw new Error(t);
+      }
       const j = await enrollRes.json();
-      setMsg(`Done! Enrolled ${j.enrolled} faces for ${form.name} (${form.emp_code}). Now test at /kiosk`);
-      alert(`Success! ${form.name} enrolled. Go to /kiosk and scan face to log time in/out.`);
+      setMsg(`Done! Enrolled ${j.enrolled} faces (128-d) for ${form.name}. Now test at /kiosk`);
+      alert(`Success! ${form.name} enrolled with browser FaceNet (cloud, no Docker, very accurate). Go to /kiosk and scan.`);
     } catch (e: any) {
-      setMsg("Failed: " + e.message);
-      alert(e.message);
+      if (e.message.includes("expired")) {
+        localStorage.removeItem("token");
+        alert("Session expired — please login again at /login");
+        window.open("/login", "_blank");
+      } else {
+        setMsg("Failed: " + e.message);
+        alert(e.message);
+      }
     }
   }
 

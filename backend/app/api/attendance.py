@@ -25,6 +25,14 @@ class VerifyIn(BaseModel):
     # threshold override optional
     threshold: float | None = None
 
+class VerifyEmbeddingIn(BaseModel):
+    embedding: list[float]  # 128-d from browser face-api.js (or 512)
+    station_id: str = "GUW-01"
+    client_time: str | None = None
+    liveness_score: float | None = None
+    was_offline: bool = False
+    threshold: float | None = None
+
 @router.post("/verify")
 def verify_and_mark(body: VerifyIn, db: Session = Depends(get_db), user=Depends(require_auth)):
     # decode image
@@ -103,6 +111,81 @@ def verify_and_mark(body: VerifyIn, db: Session = Depends(get_db), user=Depends(
 
     result = process_attendance(db=db, employee=best_emp, server_time=server_time, client_time=client_time, station_id=body.station_id, confidence=confidence, liveness_score=liveness, threshold=threshold, was_offline=body.was_offline, actor=user)
 
+    return {
+        "status": result["status"],
+        "employee": {"id": best_emp.id, "emp_code": best_emp.emp_code, "name": best_emp.name},
+        "server_time": server_time.isoformat(),
+        "server_time_ist": to_ist(server_time).isoformat(),
+        "confidence": confidence,
+        "distance": best_dist,
+        "threshold": threshold,
+        "session": result.get("session"),
+        "record": result.get("record"),
+        "message": result.get("message"),
+    }
+
+@router.post("/verify-embedding")
+def verify_embedding(body: VerifyEmbeddingIn, db: Session = Depends(get_db), user=Depends(require_auth)):
+    """Cloud accurate without Docker: frontend extracts 128-d via face-api.js, backend compares (cosine) - works on Vercel free 512MB"""
+    if len(body.embedding) not in (128, 512):
+        raise HTTPException(400, f"embedding must be 128 or 512-d, got {len(body.embedding)}")
+    # Pad 128 to 512 for comparison with stored padded
+    def pad512(emb):
+        if len(emb) == 512:
+            return emb
+        if len(emb) == 128:
+            return emb + [0.0]*384
+        return (emb + [0.0]*512)[:512]
+    query_emb = pad512(body.embedding)
+
+    rows = db.execute(select(EmployeeEmbedding, Employee).join(Employee, Employee.id==EmployeeEmbedding.employee_id).where(Employee.is_active==True, EmployeeEmbedding.is_current==True)).all()
+    if not rows:
+        raise HTTPException(400, "no enrolled employees")
+
+    import numpy as np
+    def cosine_dist(a,b):
+        # Handle stored as JSON string (sqlite) or list
+        import json as _json
+        if isinstance(b, str):
+            try:
+                b = _json.loads(b)
+            except:
+                return 1.0
+        # Pad both to same len (512)
+        if len(a) != len(b):
+            maxlen = max(len(a), len(b))
+            a = (a + [0.0]*maxlen)[:maxlen]
+            b = (b + [0.0]*maxlen)[:maxlen]
+        a = np.array(a, dtype=np.float32)
+        b = np.array(b, dtype=np.float32)
+        a = a / (np.linalg.norm(a)+1e-9)
+        b = b / (np.linalg.norm(b)+1e-9)
+        return float(1 - np.dot(a,b))
+
+    candidates=[]
+    for emb_row, emp in rows:
+        dist = cosine_dist(query_emb, emb_row.embedding)
+        candidates.append((dist, emp, emb_row))
+    candidates.sort(key=lambda x: x[0])
+    top3 = candidates[:3]
+    best_dist, best_emp, best_emb = top3[0]
+    # For 128-d face-api.js, threshold is typically 0.55-0.65 (face-api uses 0.6)
+    # Our default 0.42 is for 512-d InsightFace, too strict for 128-d. Use 0.55 for 128.
+    default_thresh = 0.55 if len(body.embedding)==128 else settings.ATTENDANCE_THRESHOLD
+    threshold = body.threshold or default_thresh
+    confidence = 1 - best_dist
+    if best_dist > threshold:
+        if best_dist < threshold+0.15:
+            return {"status": "ambiguous", "message": f"Low confidence ({confidence:.2f}), please retry", "candidates": [{"emp_code": e.emp_code, "name": e.name, "distance": d, "similarity": 1-d} for d,e,_ in top3], "threshold": threshold}
+        raise HTTPException(404, f"Not recognized (similarity {confidence:.2f} < threshold {1-threshold:.2f}, dist {best_dist:.2f})")
+    server_time = now_utc()
+    client_time = None
+    if body.client_time:
+        try:
+            client_time = datetime.fromisoformat(body.client_time.replace("Z","+00:00"))
+        except:
+            client_time=None
+    result = process_attendance(db=db, employee=best_emp, server_time=server_time, client_time=client_time, station_id=body.station_id, confidence=confidence, liveness_score=body.liveness_score, threshold=threshold, was_offline=body.was_offline, actor=user)
     return {
         "status": result["status"],
         "employee": {"id": best_emp.id, "emp_code": best_emp.emp_code, "name": best_emp.name},

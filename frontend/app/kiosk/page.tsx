@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { API_URL } from "@/lib/api";
 import { enqueue } from "@/lib/offline";
 import { QRCodeSVG } from "qrcode.react";
+import { loadFaceModels, getDescriptorFromVideo } from "@/lib/face";
 
 type Status = "idle" | "scanning" | "success" | "error" | "ambiguous" | "new_face";
 
@@ -41,6 +42,13 @@ export default function KioskPage() {
         if (cached) setStationToken(cached);
       });
   }, [stationId]);
+
+  // Load face-api models for cloud-accurate browser FaceNet (no Docker)
+  useEffect(() => {
+    loadFaceModels()
+      .then(() => setDebug((d) => d + " | FaceNet 128-d ready"))
+      .catch((e) => setDebug("Face model fail: " + e.message));
+  }, []);
 
   // Pair QR (still available for phone)
   async function pair() {
@@ -157,13 +165,12 @@ export default function KioskPage() {
 
       scanningRef.current = true;
       setStatus("scanning");
-      setMsg("Scanning...");
+      setMsg("Scanning (FaceNet)...");
       try {
         const token = stationToken || localStorage.getItem("station_token") || localStorage.getItem("token") || "";
         if (!token) {
           setMsg("No station token - click Pair Phone");
           setDebug("No token, fetching public-token...");
-          // auto-fetch
           fetch(`${API_URL}/api/stations/public-token?station_id=${stationId}`)
             .then((r) => r.json())
             .then((j) => {
@@ -174,18 +181,50 @@ export default function KioskPage() {
             });
           return;
         }
-        const res = await fetch(`${API_URL}/api/attendance/verify`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-          body: JSON.stringify({
-            image_base64: b64,
-            station_id: stationId,
-            client_time: new Date().toISOString(),
-            liveness_score: useLiveness ? 0.9 : null,
-            threshold,
-            was_offline: false,
-          }),
-        });
+        // Try browser FaceNet 128-d first (cloud accurate, no Docker, like mobile apps)
+        let res: Response | null = null;
+        let usedEmbedding = false;
+        try {
+          const v = (mode === "usb" ? videoRef.current : remoteVideoRef.current || videoRef.current) as HTMLVideoElement | null;
+          if (v && v.readyState >= 2) {
+            const desc = await getDescriptorFromVideo(v);
+            if (desc) {
+              // Use embedding endpoint (128-d, threshold 0.6 for face-api)
+              const embThreshold = threshold < 0.5 ? 0.6 : threshold; // auto map 0.42->0.6 for 128-d
+              res = await fetch(`${API_URL}/api/attendance/verify-embedding`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+                body: JSON.stringify({
+                  embedding: desc,
+                  station_id: stationId,
+                  client_time: new Date().toISOString(),
+                  liveness_score: useLiveness ? 0.9 : null,
+                  threshold: embThreshold,
+                  was_offline: false,
+                }),
+              });
+              usedEmbedding = true;
+              setDebug(`FaceNet 128-d used (th ${embThreshold})`);
+            }
+          }
+        } catch (e: any) {
+          setDebug(`FaceNet fail, fallback to image: ${e.message}`);
+        }
+        // Fallback to image-based (hash) if no descriptor
+        if (!res) {
+          res = await fetch(`${API_URL}/api/attendance/verify`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+            body: JSON.stringify({
+              image_base64: b64,
+              station_id: stationId,
+              client_time: new Date().toISOString(),
+              liveness_score: useLiveness ? 0.9 : null,
+              threshold,
+              was_offline: false,
+            }),
+          });
+        }
         if (res.ok) {
           const j = await res.json();
           failCountRef.current = 0;
@@ -231,8 +270,28 @@ export default function KioskPage() {
             await new Promise((r) => setTimeout(r, 1500));
           } else if (res.status === 401) {
             setStatus("error");
-            setMsg("Auth failed - re-pair phone");
+            const isExpired = msgText.includes("expired");
+            setMsg(isExpired ? "Session expired — re-login" : "Auth failed - re-pair phone");
             setDebug(`401: ${msgText}`);
+            // Auto-fix: clear expired tokens and fetch fresh public-token
+            if (isExpired) {
+              localStorage.removeItem("token");
+              localStorage.removeItem("station_token");
+              setStationToken("");
+              fetch(`${API_URL}/api/stations/public-token?station_id=${stationId}`)
+                .then((r) => r.json())
+                .then((j) => {
+                  if (j.token) {
+                    setStationToken(j.token);
+                    localStorage.setItem("station_token", j.token);
+                    setDebug("Fetched fresh station token");
+                  }
+                });
+            }
+            await new Promise((r) => setTimeout(r, 2000));
+            if (isExpired) {
+              setMsg("Please login again at /login — token refreshed, try scanning");
+            }
           } else {
             setStatus("error");
             setMsg(msgText.slice(0,100));

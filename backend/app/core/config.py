@@ -4,8 +4,8 @@ from functools import lru_cache
 class Settings(BaseSettings):
     DATABASE_URL: str = "sqlite:///./shinygrand.db"  # override via Neon for cloud: postgresql+psycopg://...
     JWT_SECRET: str = "dev-change-me-please-32-chars-long!!"
-    JWT_EXPIRES_MINUTES: int = 15
-    JWT_REFRESH_DAYS: int = 7
+    JWT_EXPIRES_MINUTES: int = 43200  # 30 days (hotel kiosk shouldn't expire every 15 min)
+    JWT_REFRESH_DAYS: int = 30
     STATION_TOKEN_EXPIRES_MINUTES: int = 43200  # 30 days for dedicated hotel phone
     ATTENDANCE_THRESHOLD: float = 0.42  # cosine distance threshold (lower=stricter). 0.42 ~ 0.58 similarity
     ATTENDANCE_COOLDOWN_SECONDS: int = 60
